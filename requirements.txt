@@ -8,3 +8,5 @@ plotly
 scikit-learn
 imbalanced-learn
 requests
+folium
+streamlit_folium
