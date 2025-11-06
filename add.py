@@ -8,7 +8,7 @@ import statsmodels.api as sm
 import plotly.graph_objects as go
 import folium
 from folium.plugins import HeatMap
-from streamlit_folium import st_folium # <-- NEW IMPORT
+from streamlit_folium import st_folium
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
@@ -124,7 +124,6 @@ def clean_and_engineer(df_raw):
     
     return df, X_features, Y_class
 
-# --- NEW CACHED FUNCTION ---
 @st.cache_data
 def create_hotspot_map(_df):
     """Creates the Folium hotspot map object."""
@@ -145,7 +144,6 @@ def create_hotspot_map(_df):
     m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="cartodbdarkmatter")
     HeatMap(heat_data).add_to(m)
     return m
-# --- END NEW FUNCTION ---
 
 @st.cache_data
 def get_splits_and_scaler(X, Y):
@@ -404,21 +402,22 @@ elif page == "Descriptive Analysis":
         ax2.tick_params(axis='x', rotation=45)
         st.pyplot(fig2)
 
-    with st.expander("View Time-Series and Heatmap Plots"):
-        st.write("---")
-        fig3, ax3 = plt.subplots(figsize=(12, 6))
-        df.set_index('crash_date').resample('M').size().plot(ax=ax3)
-        ax3.set_title('Collisions Over Time (Monthly Trend)')
-        st.pyplot(fig3)
-        
-        st.write("---")
-        fig4, ax4 = plt.subplots(figsize=(14, 8))
-        df_heatmap = df.groupby(['day_of_week', 'crash_hour']).size().unstack(fill_value=0)
-        days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        df_heatmap = df_heatmap.reindex(days_order)
-        sns.heatmap(df_heatmap, cmap='Reds', linewidths=.5, ax=ax4)
-        ax4.set_title('Collisions Heatmap: Hour of Day vs. Day of Week')
-        st.pyplot(fig4)
+    # --- Time-Series and Heatmap (No longer hidden) ---
+    st.write("---")
+    fig3, ax3 = plt.subplots(figsize=(12, 6))
+    df.set_index('crash_date').resample('M').size().plot(ax=ax3)
+    ax3.set_title('Collisions Over Time (Monthly Trend)')
+    st.pyplot(fig3)
+    
+    st.write("---")
+    fig4, ax4 = plt.subplots(figsize=(14, 8))
+    df_heatmap = df.groupby(['day_of_week', 'crash_hour']).size().unstack(fill_value=0)
+    days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    df_heatmap = df_heatmap.reindex(days_order)
+    sns.heatmap(df_heatmap, cmap='Reds', linewidths=.5, ax=ax4)
+    ax4.set_title('Collisions Heatmap: Hour of Day vs. Day of Week')
+    st.pyplot(fig4)
+    st.write("---")
 
     st.subheader("Where do collisions occur?")
     fig5, ax5 = plt.subplots(figsize=(10, 5))
@@ -427,118 +426,120 @@ elif page == "Descriptive Analysis":
     ax5.set_title('Total Collisions by Borough')
     st.pyplot(fig5)
     
-    # --- NEW SECTION FOR HOTSPOT MAP ---
+    # --- Hotspot Map (No longer hidden) ---
     st.subheader("Collision Hotspot Map")
     st.markdown("This map shows the highest concentrations of the 50,000 most recent crashes.")
     with st.spinner("Generating interactive hotspot map..."):
-        # Create the map
         m = create_hotspot_map(df)
-        # Render it
         st_folium(m, width='100%', height=500)
-    # --- END NEW SECTION ---
+    st.write("---")
 
     
     st.subheader("What is the human impact?")
-    with st.expander("View Victim-Based Plots"):
-        st.write("---")
-        col1, col2 = st.columns(2)
-        with col1:
-            fig6, ax6 = plt.subplots()
-            total_injured = {
-                'Pedestrians': df['number_of_pedestrians_injured'].sum(),
-                'Cyclists': df['number_of_cyclist_injured'].sum(),
-                'Motorists': df['number_of_motorist_injured'].sum()
-            }
-            ax6.pie(total_injured.values(), labels=total_injured.keys(), autopct='%1.1f%%',
-                    startangle=140, colors=sns.color_palette('muted'))
-            ax6.set_title('Breakdown of Total Persons Injured by Type')
-            st.pyplot(fig6)
-        
-        with col2:
-            fig7, ax7 = plt.subplots(figsize=(12, 7))
-            borough_injuries = df.groupby('borough')[['number_of_pedestrians_injured', 'number_of_cyclist_injured', 'number_of_motorist_injured']].sum()
-            borough_injuries = borough_injuries.rename(columns={
-                'number_of_pedestrians_injured': 'Pedestrians',
-                'number_of_cyclist_injured': 'Cyclists',
-                'number_of_motorist_injured': 'Motorists'
-            })
-            borough_injuries.drop('Unspecified', errors='ignore', inplace=True)
-            borough_injuries['total'] = borough_injuries.sum(axis=1)
-            borough_injuries = borough_injuries.sort_values('total', ascending=False).drop('total', axis=1)
-            borough_injuries.plot(kind='bar', stacked=True, ax=ax7, colormap='viridis')
-            ax7.set_title('Injuries by Type and Borough')
-            st.pyplot(fig7)
-        
-        st.write("---")
-        fig8, ax8 = plt.subplots(figsize=(12, 7))
-        victim_trends = df.set_index('crash_date').resample('M')[['number_of_pedestrians_injured', 'number_of_cyclist_injured', 'number_of_motorist_injured']].sum().rename(columns={
-            'number_of_pedestrians_injured': 'Pedestrians Injured',
-            'number_of_cyclist_injured': 'Cyclists Injured',
-            'number_of_motorist_injured': 'Motorists Injured'
+    # --- Victim Plots (No longer hidden) ---
+    col1, col2 = st.columns(2)
+    with col1:
+        fig6, ax6 = plt.subplots()
+        total_injured = {
+            'Pedestrians': df['number_of_pedestrians_injured'].sum(),
+            'Cyclists': df['number_of_cyclist_injured'].sum(),
+            'Motorists': df['number_of_motorist_injured'].sum()
+        }
+        ax6.pie(total_injured.values(), labels=total_injured.keys(), autopct='%1.1f%%',
+                startangle=140, colors=sns.color_palette('muted'))
+        ax6.set_title('Breakdown of Total Persons Injured by Type')
+        st.pyplot(fig6)
+    
+    with col2:
+        fig7, ax7 = plt.subplots(figsize=(12, 7))
+        borough_injuries = df.groupby('borough')[['number_of_pedestrians_injured', 'number_of_cyclist_injured', 'number_of_motorist_injured']].sum()
+        borough_injuries = borough_injuries.rename(columns={
+            'number_of_pedestrians_injured': 'Pedestrians',
+            'number_of_cyclist_injured': 'Cyclists',
+            'number_of_motorist_injured': 'Motorists'
         })
-        victim_trends.plot(ax=ax8, colormap='Dark2')
-        ax8.set_title('Monthly Injuries by Victim Type')
-        st.pyplot(fig8)
+        borough_injuries.drop('Unspecified', errors='ignore', inplace=True)
+        borough_injuries['total'] = borough_injuries.sum(axis=1)
+        borough_injuries = borough_injuries.sort_values('total', ascending=False).drop('total', axis=1)
+        borough_injuries.plot(kind='bar', stacked=True, ax=ax7, colormap='viridis')
+        ax7.set_title('Injuries by Type and Borough')
+        st.pyplot(fig7)
+    
+    st.write("---")
+    fig8, ax8 = plt.subplots(figsize=(12, 7))
+    victim_trends = df.set_index('crash_date').resample('M')[['number_of_pedestrians_injured', 'number_of_cyclist_injured', 'number_of_motorist_injured']].sum().rename(columns={
+        'number_of_pedestrians_injured': 'Pedestrians Injured',
+        'number_of_cyclist_injured': 'Cyclists Injured',
+        'number_of_motorist_injured': 'Motorists Injured'
+    })
+    victim_trends.plot(ax=ax8, colormap='Dark2')
+    ax8.set_title('Monthly Injuries by Victim Type')
+    st.pyplot(fig8)
 
 
 elif page == "Diagnostic Analysis":
     st.header("Diagnostic Analysis: Why Do Injuries Happen?")
     st.markdown("This section explores the *causes* and *relationships* behind collisions.")
     
-    with st.expander("View OLS Regression (Statistical Factor Analysis)"):
-        with st.spinner("Running OLS Regression..."):
-            Y_ols = df['total_injured']
-            X_ols = sm.add_constant(X_features, has_constant='add').astype(float)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                ols_model = sm.OLS(Y_ols, X_ols).fit()
-        
-        st.subheader("OLS Regression Summary")
-        st.text(ols_model.summary())
-        st.markdown(f"""
-        * **Interpretation:** The **R-squared ({ols_model.rsquared:.3f})** is very low, which is a key finding. It means our model can only explain {ols_model.rsquared:.1%} of the variation in injuries. This proves that predicting the *exact number* of injuries is extremely difficult and dominated by random chance and unmeasured factors (like speed at impact, seatbelt use, etc.).
-        * **Key Insight:** However, the **P>|t|** column (p-value) is `0.000` for many factors, proving they are **highly statistically significant**. Factors like "Failure to Yield Right-of-Way" and "Traffic Control Disregarded" are clearly linked to more injuries.
-        """)
+    # --- OLS Regression (No longer hidden) ---
+    st.subheader("Statistical Factor Analysis (OLS Regression)")
+    with st.spinner("Running OLS Regression..."):
+        Y_ols = df['total_injured']
+        X_ols = sm.add_constant(X_features, has_constant='add').astype(float)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ols_model = sm.OLS(Y_ols, X_ols).fit()
+    
+    st.text(ols_model.summary())
+    st.markdown(f"""
+    * **Interpretation:** The **R-squared ({ols_model.rsquared:.3f})** is very low, which is a key finding. It means our model can only explain {ols_model.rsquared:.1%} of the variation in injuries. This proves that predicting the *exact number* of injuries is extremely difficult and dominated by random chance and unmeasured factors (like speed at impact, seatbelt use, etc.).
+    * **Key Insight:** However, the **P>|t|** column (p-value) is `0.000` for many factors, proving they are **highly statistically significant**. Factors like "Failure to Yield Right-of-Way" and "Traffic Control Disregarded" are clearly linked to more injuries.
+    """)
+    st.write("---")
 
-    with st.expander("View Top Collision Factors"):
-        fig, ax = plt.subplots(figsize=(12, 8))
-        factor_data = df[df['contributing_factor_vehicle_1'] != 'Unspecified']['contributing_factor_vehicle_1']
-        factor_counts = factor_data.value_counts().nlargest(15)
-        sns.barplot(x=factor_counts.values, y=factor_counts.index, palette='rocket', ax=ax)
-        ax.set_title('Top 15 Contributing Factors for Collisions (Vehicle 1)')
-        st.pyplot(fig)
-
-    with st.expander("View Top *Fatal* Collision Factors"):
-        fig, ax = plt.subplots(figsize=(12, 8))
-        fatal_crashes = df[df['number_of_persons_killed'] > 0]
-        if not fatal_crashes.empty:
-            fatal_factor_data = fatal_crashes[fatal_crashes['contributing_factor_vehicle_1'] != 'Unspecified']['contributing_factor_vehicle_1']
-            fatal_factor_counts = fatal_factor_data.value_counts().nlargest(15)
-            if not fatal_factor_counts.empty:
-                sns.barplot(x=fatal_factor_counts.values, y=fatal_factor_counts.index, palette='Reds_r', ax=ax)
-                ax.set_title('Top 15 Contributing Factors in *Fatal* Collisions (Vehicle 1)')
-            else:
-                st.write("No fatal crashes with specified factors in this sample.")
+    # --- Top Factors Plots (No longer hidden) ---
+    st.subheader("What are the most common causes?")
+    fig_factor, ax_factor = plt.subplots(figsize=(12, 8))
+    factor_data = df[df['contributing_factor_vehicle_1'] != 'Unspecified']['contributing_factor_vehicle_1']
+    factor_counts = factor_data.value_counts().nlargest(15)
+    sns.barplot(x=factor_counts.values, y=factor_counts.index, palette='rocket', ax=ax_factor)
+    ax_factor.set_title('Top 15 Contributing Factors for Collisions (Vehicle 1)')
+    st.pyplot(fig_factor)
+    
+    st.subheader("What causes are the most *fatal*?")
+    fig_fatal, ax_fatal = plt.subplots(figsize=(12, 8))
+    fatal_crashes = df[df['number_of_persons_killed'] > 0]
+    if not fatal_crashes.empty:
+        fatal_factor_data = fatal_crashes[fatal_crashes['contributing_factor_vehicle_1'] != 'Unspecified']['contributing_factor_vehicle_1']
+        fatal_factor_counts = fatal_factor_data.value_counts().nlargest(15)
+        if not fatal_factor_counts.empty:
+            sns.barplot(x=fatal_factor_counts.values, y=fatal_factor_counts.index, palette='Reds_r', ax=ax_fatal)
+            ax_fatal.set_title('Top 15 Contributing Factors in *Fatal* Collisions (Vehicle 1)')
         else:
-            st.write("No fatal crashes in this sample.")
-        st.pyplot(fig)
+            st.write("No fatal crashes with specified factors in this sample.")
+    else:
+        st.write("No fatal crashes in this sample.")
+    st.pyplot(fig_fatal)
+    st.write("---")
 
-    with st.expander("View Top Vehicle Types Involved"):
-        fig, ax = plt.subplots(figsize=(12, 8))
-        vehicle_data = df[df['vehicle_type_code1'] != 'Unspecified']['vehicle_type_code1']
-        vehicle_counts = vehicle_data.value_counts().nlargest(15)
-        sns.barplot(x=vehicle_counts.values, y=vehicle_counts.index, palette='Spectral', ax=ax)
-        ax.set_title('Top 15 Vehicle Types Involved in Collisions (Vehicle 1)')
-        st.pyplot(fig)
+    # --- Vehicle Type Plots (No longer hidden) ---
+    st.subheader("What vehicle types are most involved?")
+    fig_vehicle, ax_vehicle = plt.subplots(figsize=(12, 8))
+    vehicle_data = df[df['vehicle_type_code1'] != 'Unspecified']['vehicle_type_code1']
+    vehicle_counts = vehicle_data.value_counts().nlargest(15)
+    sns.barplot(x=vehicle_counts.values, y=vehicle_counts.index, palette='Spectral', ax=ax_vehicle)
+    ax_vehicle.set_title('Top 15 Vehicle Types Involved in Collisions (Vehicle 1)')
+    st.pyplot(fig_vehicle)
 
-    with st.expander("View Collision Type Sankey Diagram", expanded=True):
-        with st.spinner("Building Sankey diagram..."):
-            sankey_fig = create_sankey_fig(df)
-            st.plotly_chart(sankey_fig, use_container_width=True)
-            # Save the Sankey diagram to HTML
-            sankey_filename = '5_2_vehicle_sankey_diagram.html'
-            sankey_fig.write_html(sankey_filename)
-            st.caption(f"Interactive Sankey diagram also saved to: {sankey_filename}")
+    # --- Sankey Diagram (No longer hidden) ---
+    st.subheader("What are the most common collision types?")
+    with st.spinner("Building Sankey diagram..."):
+        sankey_fig = create_sankey_fig(df)
+        st.plotly_chart(sankey_fig, use_container_width=True)
+        # Save the Sankey diagram to HTML
+        sankey_filename = '5_2_vehicle_sankey_diagram.html'
+        sankey_fig.write_html(sankey_filename)
+        st.caption(f"Interactive Sankey diagram also saved to: {sankey_filename}")
 
 
 elif page == "Predictive Modeling (Baseline)":
