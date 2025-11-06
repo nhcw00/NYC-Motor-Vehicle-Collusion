@@ -6,6 +6,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import statsmodels.api as sm
 import plotly.graph_objects as go
+import folium
+from folium.plugins import HeatMap
+from streamlit_folium import st_folium # <-- NEW IMPORT
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
@@ -73,7 +76,6 @@ def clean_and_engineer(df_raw):
     df = df_raw.copy()
     
     # --- 1. Clean ALL Numeric Columns ---
-    # This now includes all injury/killed columns for descriptive plots
     numeric_cols = [
         'number_of_persons_injured', 'number_of_persons_killed',
         'number_of_pedestrians_injured', 'number_of_pedestrians_killed',
@@ -106,16 +108,12 @@ def clean_and_engineer(df_raw):
     # --- 4. Create Predictor Variables (X_features) ---
     X_features = pd.DataFrame(index=df.index)
     
-    # A. Continuous features
     X_features['latitude'] = df['latitude'].replace(0, np.nan).fillna(0)
     X_features['longitude'] = df['longitude'].replace(0, np.nan).fillna(0)
-
-    # B. One-Hot Encode
     X_features = X_features.join(pd.get_dummies(df['borough'], prefix='borough', drop_first=True, dtype=int))
     X_features = X_features.join(pd.get_dummies(df['day_of_week'], prefix='day', drop_first=True, dtype=int))
     X_features = X_features.join(pd.get_dummies(df['crash_hour'], prefix='hour', drop_first=True, dtype=int))
 
-    # C. High Cardinality (Top 10)
     top_10_factors = df['contributing_factor_vehicle_1'].value_counts().nlargest(10).index
     df['factor_top10'] = df['contributing_factor_vehicle_1'].apply(lambda x: x if x in top_10_factors else 'Other')
     X_features = X_features.join(pd.get_dummies(df['factor_top10'], prefix='factor', drop_first=True, dtype=int))
@@ -125,6 +123,29 @@ def clean_and_engineer(df_raw):
     X_features = X_features.join(pd.get_dummies(df['vehicle_top10'], prefix='vehicle', drop_first=True, dtype=int))
     
     return df, X_features, Y_class
+
+# --- NEW CACHED FUNCTION ---
+@st.cache_data
+def create_hotspot_map(_df):
+    """Creates the Folium hotspot map object."""
+    st.write("Cache miss: Generating hotspot map...")
+    # Filter data
+    map_data = _df.dropna(subset=['latitude', 'longitude'])
+    map_data = map_data[(map_data['latitude'].abs() > 0.01) & (map_data['longitude'].abs() > 0.01)]
+    
+    # Sample for performance
+    if len(map_data) > 20000:
+        map_data = map_data.sample(20000, random_state=RANDOM_SEED)
+    
+    heat_data = list(zip(map_data['latitude'], map_data['longitude']))
+    
+    center_lat = map_data['latitude'].mean()
+    center_lon = map_data['longitude'].mean()
+    
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="cartodbdarkmatter")
+    HeatMap(heat_data).add_to(m)
+    return m
+# --- END NEW FUNCTION ---
 
 @st.cache_data
 def get_splits_and_scaler(X, Y):
@@ -252,7 +273,7 @@ def get_tuned_results(baseline_results_df, model_no_smote, model_with_smote, X_t
     tn_with_smote, fp_with_smote, fn_with_smote, tp_with_smote = cm_with_smote.ravel()
     tuned_with_smote_results = {
         "Model": "NN (Tuned + SMOTE)",
-        "Accuracy": accuracy_score(y_test, y_pred_with_smote), # Corrected this line
+        "Accuracy": accuracy_score(y_test, y_pred_with_smote),
         "ROC-AUC": roc_auc_score(y_test, y_pred_proba_with_smote),
         "TP": tp_with_smote, "TN": tn_with_smote, "FP": fp_with_smote, "FN": fn_with_smote
     }
@@ -371,6 +392,7 @@ elif page == "Descriptive Analysis":
     col1, col2 = st.columns(2)
     with col1:
         fig1, ax1 = plt.subplots()
+        # Filter out the placeholder -1 hour
         sns.countplot(x='crash_hour', data=df[df['crash_hour'] != -1], ax=ax1, palette='viridis')
         ax1.set_title('Collisions by Hour of Day')
         st.pyplot(fig1)
@@ -404,6 +426,17 @@ elif page == "Descriptive Analysis":
                   order=df['borough'].value_counts().index)
     ax5.set_title('Total Collisions by Borough')
     st.pyplot(fig5)
+    
+    # --- NEW SECTION FOR HOTSPOT MAP ---
+    st.subheader("Collision Hotspot Map")
+    st.markdown("This map shows the highest concentrations of the 50,000 most recent crashes.")
+    with st.spinner("Generating interactive hotspot map..."):
+        # Create the map
+        m = create_hotspot_map(df)
+        # Render it
+        st_folium(m, width='100%', height=500)
+    # --- END NEW SECTION ---
+
     
     st.subheader("What is the human impact?")
     with st.expander("View Victim-Based Plots"):
@@ -463,7 +496,7 @@ elif page == "Diagnostic Analysis":
         st.subheader("OLS Regression Summary")
         st.text(ols_model.summary())
         st.markdown(f"""
-        * **Interpretation:** The **R-squared ({ols_model.rsquared:.3f})** is very low, proving that predicting the *exact number* of injuries is difficult.
+        * **Interpretation:** The **R-squared ({ols_model.rsquared:.3f})** is very low, which is a key finding. It means our model can only explain {ols_model.rsquared:.1%} of the variation in injuries. This proves that predicting the *exact number* of injuries is extremely difficult and dominated by random chance and unmeasured factors (like speed at impact, seatbelt use, etc.).
         * **Key Insight:** However, the **P>|t|** column (p-value) is `0.000` for many factors, proving they are **highly statistically significant**. Factors like "Failure to Yield Right-of-Way" and "Traffic Control Disregarded" are clearly linked to more injuries.
         """)
 
@@ -511,7 +544,6 @@ elif page == "Diagnostic Analysis":
 elif page == "Predictive Modeling (Baseline)":
     st.header("Predictive Modeling: Baseline Performance")
     
-    # --- START: THE FIX ---
     # Calculate percentages first
     pct_0 = y_test.value_counts(normalize=True)[0]
     pct_1 = y_test.value_counts(normalize=True)[1]
@@ -526,7 +558,6 @@ elif page == "Predictive Modeling (Baseline)":
     This **{pct_0/pct_1:.1f}-to-1 class imbalance** is the central challenge. 
     Accuracy is a misleading metric, as a model just guessing "No Injury" would be {pct_0:.1%} accurate.
     """)
-    # --- END: THE FIX ---
 
     with st.spinner("Loading trained baseline models..."):
         trained_models = train_baseline_models(X_train, y_train, preprocessor)
