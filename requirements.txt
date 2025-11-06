@@ -1,1 +1,10 @@
 streamlit
+pandas
+numpy
+matplotlib
+seaborn
+statsmodels
+plotly
+scikit-learn
+imbalanced-learn
+requests
