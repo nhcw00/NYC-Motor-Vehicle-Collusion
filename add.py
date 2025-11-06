@@ -27,6 +27,8 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.calibration import CalibratedClassifierCV
 import warnings
+import os 
+import webbrowser
 
 # --- Page Config ---
 st.set_page_config(
@@ -40,7 +42,6 @@ RANDOM_SEED = 42
 
 # =============================================================================
 # CACHED FUNCTIONS (Data Loading & Model Training)
-# These will only run ONCE to speed up the app.
 # =============================================================================
 
 @st.cache_data
@@ -71,11 +72,30 @@ def clean_and_engineer(df_raw):
     st.write("Cache miss: Cleaning data and engineering features...")
     df = df_raw.copy()
     
-    # --- 1. Create Target Variable (Y_class) ---
-    cols_to_clean_for_Y = ['number_of_pedestrians_injured', 'number_of_cyclist_injured', 'number_of_motorist_injured']
-    for col in cols_to_clean_for_Y:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+    # --- 1. Clean ALL Numeric Columns ---
+    # This now includes all injury/killed columns for descriptive plots
+    numeric_cols = [
+        'number_of_persons_injured', 'number_of_persons_killed',
+        'number_of_pedestrians_injured', 'number_of_pedestrians_killed',
+        'number_of_cyclist_injured', 'number_of_cyclist_killed',
+        'number_of_motorist_injured', 'number_of_motorist_killed',
+        'latitude', 'longitude'
+    ]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
+    # --- 2. Clean Temporal/Categorical Columns ---
+    df['crash_date'] = pd.to_datetime(df['crash_date'])
+    df['crash_hour'] = pd.to_datetime(df['crash_time'], format='%H:%M', errors='coerce').dt.hour.fillna(-1).astype(int)
+    df['day_of_week'] = df['crash_date'].dt.day_name().fillna("Unspecified")
+    df['month'] = df['crash_date'].dt.month
+    
+    df['borough'] = df['borough'].fillna("Unspecified").replace(["Unknown", ""], "Unspecified")
+    df['contributing_factor_vehicle_1'] = df['contributing_factor_vehicle_1'].fillna("Unspecified").replace(["Unknown", ""], "Unspecified")
+    df['vehicle_type_code1'] = df['vehicle_type_code1'].fillna("Unspecified").replace(["Unknown", ""], "Unspecified")
+    df['vehicle_type_code2'] = df['vehicle_type_code2'].fillna("Unspecified").replace(["Unknown", ""], "Unspecified")
+
+    # --- 3. Create Target Variable (Y_class) ---
     df['total_injured'] = (
         df['number_of_pedestrians_injured'] + 
         df['number_of_cyclist_injured'] + 
@@ -83,32 +103,23 @@ def clean_and_engineer(df_raw):
     )
     Y_class = (df['total_injured'] > 0).astype(int)
     
-    # --- 2. Create Predictor Variables (X_features) ---
+    # --- 4. Create Predictor Variables (X_features) ---
     X_features = pd.DataFrame(index=df.index)
     
     # A. Continuous features
-    df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce').replace(0, np.nan).fillna(0)
-    df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce').replace(0, np.nan).fillna(0)
-    X_features['latitude'] = df['latitude']
-    X_features['longitude'] = df['longitude']
+    X_features['latitude'] = df['latitude'].replace(0, np.nan).fillna(0)
+    X_features['longitude'] = df['longitude'].replace(0, np.nan).fillna(0)
 
-    # B. Temporal/Categorical
-    df['crash_date'] = pd.to_datetime(df['crash_date'])
-    df['borough'] = df['borough'].fillna("Unspecified").replace(["Unknown", ""], "Unspecified")
-    df['day_of_week'] = df['crash_date'].dt.day_name().fillna("Unspecified")
-    df['crash_hour'] = pd.to_datetime(df['crash_time'], format='%H:%M', errors='coerce').dt.hour.fillna(-1).astype(int)
-    
+    # B. One-Hot Encode
     X_features = X_features.join(pd.get_dummies(df['borough'], prefix='borough', drop_first=True, dtype=int))
     X_features = X_features.join(pd.get_dummies(df['day_of_week'], prefix='day', drop_first=True, dtype=int))
     X_features = X_features.join(pd.get_dummies(df['crash_hour'], prefix='hour', drop_first=True, dtype=int))
 
-    # C. High Cardinality
-    df['contributing_factor_vehicle_1'] = df['contributing_factor_vehicle_1'].fillna("Unspecified").replace(["Unknown", ""], "Unspecified")
+    # C. High Cardinality (Top 10)
     top_10_factors = df['contributing_factor_vehicle_1'].value_counts().nlargest(10).index
     df['factor_top10'] = df['contributing_factor_vehicle_1'].apply(lambda x: x if x in top_10_factors else 'Other')
     X_features = X_features.join(pd.get_dummies(df['factor_top10'], prefix='factor', drop_first=True, dtype=int))
 
-    df['vehicle_type_code1'] = df['vehicle_type_code1'].fillna("Unspecified").replace(["Unknown", ""], "Unspecified")
     top_10_vehicles = df['vehicle_type_code1'].value_counts().nlargest(10).index
     df['vehicle_top10'] = df['vehicle_type_code1'].apply(lambda x: x if x in top_10_vehicles else 'Other')
     X_features = X_features.join(pd.get_dummies(df['vehicle_top10'], prefix='vehicle', drop_first=True, dtype=int))
@@ -177,7 +188,7 @@ def train_tuned_models(_X_train, _y_train, _preprocessor):
     # --- 2. "WITH SMOTE" Grid Search ---
     pipeline_with_smote = ImbPipeline(steps=[
         ('preprocessor', _preprocessor),
-        ('smote', SMOTE(random_state=RANDOM_SEED)),
+        ('smote', SMOTE(random_state=RANDOM_SEED)), # <-- Add SMOTE step
         ('classifier', MLPClassifier(random_state=RANDOM_SEED, max_iter=1000, early_stopping=True))
     ])
     grid_search_with_smote = GridSearchCV(
@@ -190,7 +201,6 @@ def train_tuned_models(_X_train, _y_train, _preprocessor):
 
 # =============================================================================
 # HELPER FUNCTIONS (Plotting & Analysis)
-# These run quickly and are NOT cached.
 # =============================================================================
 
 def get_baseline_results(trained_models, X_test, y_test):
@@ -221,7 +231,6 @@ def get_baseline_results(trained_models, X_test, y_test):
 def get_tuned_results(baseline_results_df, model_no_smote, model_with_smote, X_test, y_test):
     """Generates predictions and results from tuned models."""
     
-    # Get the baseline NN row
     baseline_nn_row = baseline_results_df[baseline_results_df['Model'] == 'Neural Network'].iloc[0].to_dict()
     
     # 1. Evaluate "Tuned (No SMOTE)"
@@ -243,12 +252,11 @@ def get_tuned_results(baseline_results_df, model_no_smote, model_with_smote, X_t
     tn_with_smote, fp_with_smote, fn_with_smote, tp_with_smote = cm_with_smote.ravel()
     tuned_with_smote_results = {
         "Model": "NN (Tuned + SMOTE)",
-        "Accuracy": accuracy_score(y_test, y_pred_with_smote),
+        "Accuracy": accuracy_score(y_test, y_pred_with_smote), # Corrected this line
         "ROC-AUC": roc_auc_score(y_test, y_pred_proba_with_smote),
         "TP": tp_with_smote, "TN": tn_with_smote, "FP": fp_with_smote, "FN": fn_with_smote
     }
     
-    # 3. Create Final Comparison Table
     comparison_df = pd.DataFrame([
         baseline_nn_row,  
         tuned_no_smote_results, 
@@ -296,12 +304,17 @@ def create_sankey_fig(df):
         link=dict(source=links['source'], target=links['target'],
                   value=links['value'], color=link_colors)
     )])
-    fig.update_layout(title_text="Top 25 Most Common Vehicle Collision Combinations", font_size=12)
+    fig.update_layout(
+        title_text="Top 25 Most Common Vehicle Collision Combinations", 
+        font_size=12,
+        width=1400,
+        height=1100,
+        margin=dict(t=300, b=50, l=50, r=50) 
+    )
     return fig
 
 # =============================================================================
 # MAIN STREAMLIT APP
-# This part runs top-to-bottom on every interaction.
 # =============================================================================
 
 # --- 1. Load, Clean, and Split Data (using cache) ---
@@ -335,6 +348,10 @@ if page == "Introduction & Data":
     st.subheader("Raw Data Sample (Most Recent 50,000 Collisions)")
     st.dataframe(df_raw.head())
     
+    with st.expander("View Full Cleaned Data & Feature Engineering"):
+        st.dataframe(df.head())
+        st.dataframe(X_features.head())
+
     st.subheader("Data Dictionary")
     st.markdown("""
     * **`is_injury` (Target):** Binary. `1` if `NUMBER_OF_PERSONS_INJURED` > 0, else `0`.
@@ -348,6 +365,7 @@ if page == "Introduction & Data":
 
 elif page == "Descriptive Analysis":
     st.header("Descriptive Analysis: What, When, and Where")
+    st.markdown("This section explores the basic patterns of collisions.")
     
     st.subheader("When do collisions occur?")
     col1, col2 = st.columns(2)
@@ -364,61 +382,151 @@ elif page == "Descriptive Analysis":
         ax2.tick_params(axis='x', rotation=45)
         st.pyplot(fig2)
 
+    with st.expander("View Time-Series and Heatmap Plots"):
+        st.write("---")
+        fig3, ax3 = plt.subplots(figsize=(12, 6))
+        df.set_index('crash_date').resample('M').size().plot(ax=ax3)
+        ax3.set_title('Collisions Over Time (Monthly Trend)')
+        st.pyplot(fig3)
+        
+        st.write("---")
+        fig4, ax4 = plt.subplots(figsize=(14, 8))
+        df_heatmap = df.groupby(['day_of_week', 'crash_hour']).size().unstack(fill_value=0)
+        days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        df_heatmap = df_heatmap.reindex(days_order)
+        sns.heatmap(df_heatmap, cmap='Reds', linewidths=.5, ax=ax4)
+        ax4.set_title('Collisions Heatmap: Hour of Day vs. Day of Week')
+        st.pyplot(fig4)
+
     st.subheader("Where do collisions occur?")
-    fig3, ax3 = plt.subplots(figsize=(10, 5))
-    sns.countplot(y='borough', data=df, ax=ax3, palette='coolwarm',
+    fig5, ax5 = plt.subplots(figsize=(10, 5))
+    sns.countplot(y='borough', data=df, ax=ax5, palette='coolwarm',
                   order=df['borough'].value_counts().index)
-    ax3.set_title('Total Collisions by Borough')
-    st.pyplot(fig3)
+    ax5.set_title('Total Collisions by Borough')
+    st.pyplot(fig5)
     
-    st.subheader("What vehicle combinations are most common?")
-    if st.button("Generate Sankey Diagram (Top 25 Collisions)"):
-        with st.spinner("Building Sankey diagram..."):
-            sankey_fig = create_sankey_fig(df)
-            st.plotly_chart(sankey_fig, use_container_width=True)
+    st.subheader("What is the human impact?")
+    with st.expander("View Victim-Based Plots"):
+        st.write("---")
+        col1, col2 = st.columns(2)
+        with col1:
+            fig6, ax6 = plt.subplots()
+            total_injured = {
+                'Pedestrians': df['number_of_pedestrians_injured'].sum(),
+                'Cyclists': df['number_of_cyclist_injured'].sum(),
+                'Motorists': df['number_of_motorist_injured'].sum()
+            }
+            ax6.pie(total_injured.values(), labels=total_injured.keys(), autopct='%1.1f%%',
+                    startangle=140, colors=sns.color_palette('muted'))
+            ax6.set_title('Breakdown of Total Persons Injured by Type')
+            st.pyplot(fig6)
+        
+        with col2:
+            fig7, ax7 = plt.subplots(figsize=(12, 7))
+            borough_injuries = df.groupby('borough')[['number_of_pedestrians_injured', 'number_of_cyclist_injured', 'number_of_motorist_injured']].sum()
+            borough_injuries = borough_injuries.rename(columns={
+                'number_of_pedestrians_injured': 'Pedestrians',
+                'number_of_cyclist_injured': 'Cyclists',
+                'number_of_motorist_injured': 'Motorists'
+            })
+            borough_injuries.drop('Unspecified', errors='ignore', inplace=True)
+            borough_injuries['total'] = borough_injuries.sum(axis=1)
+            borough_injuries = borough_injuries.sort_values('total', ascending=False).drop('total', axis=1)
+            borough_injuries.plot(kind='bar', stacked=True, ax=ax7, colormap='viridis')
+            ax7.set_title('Injuries by Type and Borough')
+            st.pyplot(fig7)
+        
+        st.write("---")
+        fig8, ax8 = plt.subplots(figsize=(12, 7))
+        victim_trends = df.set_index('crash_date').resample('M')[['number_of_pedestrians_injured', 'number_of_cyclist_injured', 'number_of_motorist_injured']].sum().rename(columns={
+            'number_of_pedestrians_injured': 'Pedestrians Injured',
+            'number_of_cyclist_injured': 'Cyclists Injured',
+            'number_of_motorist_injured': 'Motorists Injured'
+        })
+        victim_trends.plot(ax=ax8, colormap='Dark2')
+        ax8.set_title('Monthly Injuries by Victim Type')
+        st.pyplot(fig8)
+
 
 elif page == "Diagnostic Analysis":
     st.header("Diagnostic Analysis: Why Do Injuries Happen?")
-    st.markdown("""
-    This regression model attempts to predict the **number** of people injured,
-    to see which factors are statistically significant.
-    """)
+    st.markdown("This section explores the *causes* and *relationships* behind collisions.")
     
-    with st.spinner("Running OLS Regression..."):
-        # We need to re-clean for the OLS Y-variable
-        Y_ols = df['total_injured']
-        # Add a constant for the intercept
-        X_ols = sm.add_constant(X_features, has_constant='add')
+    with st.expander("View OLS Regression (Statistical Factor Analysis)"):
+        with st.spinner("Running OLS Regression..."):
+            Y_ols = df['total_injured']
+            X_ols = sm.add_constant(X_features, has_constant='add').astype(float)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                ols_model = sm.OLS(Y_ols, X_ols).fit()
         
-        # OLS requires all dtypes to be numeric
-        X_ols = X_ols.astype(float)
-        
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            ols_model = sm.OLS(Y_ols, X_ols).fit()
-        
-    st.subheader("OLS Regression Summary")
-    st.text(ols_model.summary())
-    
-    st.subheader("Interpretation")
-    st.markdown(f"""
-    * **R-squared (0.050):** This is very low, which is a key finding. It means our model can only explain 5% of the variation in injuries. This proves that predicting the *exact number* of injuries is extremely difficult and dominated by random chance and unmeasured factors (like speed at impact, seatbelt use, etc.).
-    * **P>|t| (P-values):** Despite the low R-squared, many factors have p-values of `0.000`. This means they are **highly statistically significant**.
-    * **Top Factors:** We can be very confident that `factor_Traffic Control Disregarded` (+0.636 injuries), `factor_Failure to Yield Right-of-Way` (+0.578 injuries), and `factor_Unsafe Speed` (+0.505 injuries) are all strongly associated with an increase in injuries.
-    """)
+        st.subheader("OLS Regression Summary")
+        st.text(ols_model.summary())
+        st.markdown(f"""
+        * **Interpretation:** The **R-squared ({ols_model.rsquared:.3f})** is very low, proving that predicting the *exact number* of injuries is difficult.
+        * **Key Insight:** However, the **P>|t|** column (p-value) is `0.000` for many factors, proving they are **highly statistically significant**. Factors like "Failure to Yield Right-of-Way" and "Traffic Control Disregarded" are clearly linked to more injuries.
+        """)
+
+    with st.expander("View Top Collision Factors"):
+        fig, ax = plt.subplots(figsize=(12, 8))
+        factor_data = df[df['contributing_factor_vehicle_1'] != 'Unspecified']['contributing_factor_vehicle_1']
+        factor_counts = factor_data.value_counts().nlargest(15)
+        sns.barplot(x=factor_counts.values, y=factor_counts.index, palette='rocket', ax=ax)
+        ax.set_title('Top 15 Contributing Factors for Collisions (Vehicle 1)')
+        st.pyplot(fig)
+
+    with st.expander("View Top *Fatal* Collision Factors"):
+        fig, ax = plt.subplots(figsize=(12, 8))
+        fatal_crashes = df[df['number_of_persons_killed'] > 0]
+        if not fatal_crashes.empty:
+            fatal_factor_data = fatal_crashes[fatal_crashes['contributing_factor_vehicle_1'] != 'Unspecified']['contributing_factor_vehicle_1']
+            fatal_factor_counts = fatal_factor_data.value_counts().nlargest(15)
+            if not fatal_factor_counts.empty:
+                sns.barplot(x=fatal_factor_counts.values, y=fatal_factor_counts.index, palette='Reds_r', ax=ax)
+                ax.set_title('Top 15 Contributing Factors in *Fatal* Collisions (Vehicle 1)')
+            else:
+                st.write("No fatal crashes with specified factors in this sample.")
+        else:
+            st.write("No fatal crashes in this sample.")
+        st.pyplot(fig)
+
+    with st.expander("View Top Vehicle Types Involved"):
+        fig, ax = plt.subplots(figsize=(12, 8))
+        vehicle_data = df[df['vehicle_type_code1'] != 'Unspecified']['vehicle_type_code1']
+        vehicle_counts = vehicle_data.value_counts().nlargest(15)
+        sns.barplot(x=vehicle_counts.values, y=vehicle_counts.index, palette='Spectral', ax=ax)
+        ax.set_title('Top 15 Vehicle Types Involved in Collisions (Vehicle 1)')
+        st.pyplot(fig)
+
+    with st.expander("View Collision Type Sankey Diagram", expanded=True):
+        with st.spinner("Building Sankey diagram..."):
+            sankey_fig = create_sankey_fig(df)
+            st.plotly_chart(sankey_fig, use_container_width=True)
+            # Save the Sankey diagram to HTML
+            sankey_filename = '5_2_vehicle_sankey_diagram.html'
+            sankey_fig.write_html(sankey_filename)
+            st.caption(f"Interactive Sankey diagram also saved to: {sankey_filename}")
+
 
 elif page == "Predictive Modeling (Baseline)":
     st.header("Predictive Modeling: Baseline Performance")
+    
+    # --- START: THE FIX ---
+    # Calculate percentages first
+    pct_0 = y_test.value_counts(normalize=True)[0]
+    pct_1 = y_test.value_counts(normalize=True)[1]
+    
     st.markdown(f"""
     Can we predict the binary outcome: **Injury (1)** vs. **No Injury (0)**?
     
     Test Set Class Balance:
-    * No Injury (0): {y_test.value_counts(normalize=True)[0]:.1%}
-    * Injury (1): {y_test.value_counts(normalize=True)[1]:.1%}
+    * No Injury (0): {pct_0:.1%}
+    * Injury (1): {pct_1:.1%}
     
-    This **{y_test.value_counts(normalize=True)[0]:.1% / y_test.value_counts(normalize=True)[1]:.1%} class imbalance** is the central challenge. 
-    Accuracy is a misleading metric.
+    This **{pct_0/pct_1:.1f}-to-1 class imbalance** is the central challenge. 
+    Accuracy is a misleading metric, as a model just guessing "No Injury" would be {pct_0:.1%} accurate.
     """)
+    # --- END: THE FIX ---
 
     with st.spinner("Loading trained baseline models..."):
         trained_models = train_baseline_models(X_train, y_train, preprocessor)
@@ -430,17 +538,21 @@ elif page == "Predictive Modeling (Baseline)":
     st.subheader("Baseline Confusion Matrices")
     class_labels = ['No Injury (0)', 'Injury (1)']
     
-    col1, col2, col3 = st.columns(3)
-    cols = [col1, col2, col3]
+    # Create a 2x3 grid for the plots
+    fig, axes = plt.subplots(2, 3, figsize=(20, 12))
+    axes = axes.flatten() # Make it easy to iterate
     
     for i, (name, pipeline) in enumerate(trained_models.items()):
         cm = confusion_matrix(y_test, pipeline.predict(X_test))
         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_labels)
+        disp.plot(cmap=plt.cm.Blues, ax=axes[i])
+        axes[i].set_title(name)
+    
+    # Hide any unused subplots
+    for j in range(i + 1, len(axes)):
+        axes[j].axis('off')
         
-        fig, ax = plt.subplots(figsize=(6, 5))
-        disp.plot(cmap=plt.cm.Blues, ax=ax)
-        ax.set_title(name)
-        cols[i % 3].pyplot(fig)
+    st.pyplot(fig)
 
     # --- Plot ROC Curve ---
     st.subheader("Combined ROC Curve (Baseline)")
@@ -503,40 +615,88 @@ elif page == "Predictive Modeling (Tuning & SMOTE)":
     st.dataframe(comparison_df.style.highlight_max(axis=0, subset=['Accuracy', 'ROC-AUC', 'TP']))
     
     st.subheader("Analysis")
-    st.markdown(f"""
-    The results are clear:
-    1.  **Tuning Alone Failed:** The `NN (Tuned, No SMOTE)` model performed identically to the baseline. This proves the issue was not the model's parameters, but the imbalanced data.
-    2.  **SMOTE Succeeded:** The `NN (Tuned + SMOTE)` model **fundamentally fixed the model's behavior.** * **False Negatives** (missed injuries) plummeted from **{comparison_df.loc[comparison_df['Model'] == 'Neural Network', 'FN'].values[0]}** to **{comparison_df.loc[comparison_df['Model'] == 'NN (Tuned + SMOTE)', 'FN'].values[0]}**.
-        * **True Positives** (found injuries) skyrocketed from **{comparison_df.loc[comparison_df['Model'] == 'Neural Network', 'TP'].values[0]}** to **{comparison_df.loc[comparison_df['Model'] == 'NN (Tuned + SMOTE)', 'TP'].values[0]}**.
+    # --- START: DYNAMIC CONCLUSION ---
+    try:
+        baseline_fn = comparison_df.loc[comparison_df['Model'] == 'Neural Network', 'FN'].values[0]
+        smote_fn = comparison_df.loc[comparison_df['Model'] == 'NN (Tuned + SMOTE)', 'FN'].values[0]
+        baseline_tp = comparison_df.loc[comparison_df['Model'] == 'Neural Network', 'TP'].values[0]
+        smote_tp = comparison_df.loc[comparison_df['Model'] == 'NN (Tuned + SMOTE)', 'TP'].values[0]
         
-    The SMOTE model is the only one that achieves the primary goal: **finding the crashes that result in injury.**
-    """)
+        st.markdown(f"""
+        The results are clear:
+        1.  **Tuning Alone Failed:** The `NN (Tuned, No SMOTE)` model performed identically to the baseline. This proves the issue was not the model's parameters, but the imbalanced data.
+        2.  **SMOTE Succeeded:** The `NN (Tuned + SMOTE)` model **fundamentally fixed the model's behavior.**
+            * **False Negatives** (missed injuries) plummeted from **{baseline_fn:,}** to **{smote_fn:,}**.
+            * **True Positives** (found injuries) skyrocketed from **{baseline_tp:,}** to **{smote_tp:,}**.
+            
+        The SMOTE model is the only one that achieves the primary goal: **finding the crashes that result in injury.**
+        """)
+    except Exception as e:
+        st.error(f"Could not generate dynamic conclusion. {e}")
+    # --- END: DYNAMIC CONCLUSION ---
 
 
 elif page == "Conclusion & Recommendations":
     st.header("Conclusion & Recommendations")
     
-    st.markdown("""
-    ### The Problem: Accuracy vs. Reality
-    Our baseline models, including the top-performing **`Neural Network`**, all achieved a high and misleading **Accuracy of ~76%**. A closer look at the results showed this was a failure, not a success. The models were simply guessing the majority "No Injury" class (76% of the data) and failed to learn the patterns for the "Injury" class.
+    # --- START: DYNAMIC CONCLUSION ---
+    # We need to re-run the models here to get the data for the conclusion
+    # This is fast because the models are cached
+    with st.spinner("Loading models for final report..."):
+        baseline_models = train_baseline_models(X_train, y_train, preprocessor)
+        baseline_results_df, _ = get_baseline_results(baseline_models, X_test, y_test)
+        
+        model_no_smote, model_with_smote = train_tuned_models(X_train, y_train, preprocessor)
+        
+        comparison_df, _, _ = get_tuned_results(
+            baseline_results_df, model_no_smote, model_with_smote, X_test, y_test
+        )
     
-    This is proven by the **100,000+ False Negatives**—our best baseline model *failed to identify 96% of all actual injury crashes.*
-    
-    ### The Solution: SMOTE's Impact
-    Our goal was to fix this imbalance. The comparison table clearly shows the effect of our strategies:
-    
-    * **1. `NN (Tuned, No SMOTE)`:** Hyperparameter tuning alone provided **no meaningful improvement**. The metrics are identical to the baseline, proving the model's weakness was not its parameters, but the imbalanced data.
-    * **2. `NN (Tuned + SMOTE)`:** Applying SMOTE to the training data **fundamentally fixed the model's behavior.**
-        * **False Negatives** (missed injuries) plummeted from over 101,000 to **~41,000**.
-        * **True Positives** (found injuries) skyrocketed from ~3,700 to **~64,000**.
-    
-    This model did see its `Accuracy` drop to ~59% and its `ROC-AUC` (distinguishing power) stay flat at ~0.638. This is an expected trade-off: in forcing the model to find the rare "Injury" class, it made more mistakes on the "No Injury" class.
-    
-    ### Final Recommendation
-    
-    **The `NN (Tuned + SMOTE)` model is the *only* useful model for this problem.**
-    
-    For a public safety analysis, the cost of a **False Negative** (missing an injury) is far higher than the cost of a **False Positive** (flagging a safe crash for review). The SMOTE-trained model was the *only one* capable of achieving the primary goal: finding the crashes that result in injury.
-    
-    The low final `ROC-AUC` (0.638) suggests we have reached the limit of what our current features (borough, time, cause) can predict. Future work must focus on **engineering new features** (e.g., weather data, road type, speed limits) to improve the model's ability to distinguish between a crash and an *injurious* crash.
-    """)
+    try:
+        # Get the numbers from the final DataFrame
+        pct_0 = y_test.value_counts(normalize=True)[0]
+        pct_1 = y_test.value_counts(normalize=True)[1]
+        
+        baseline_acc = comparison_df.loc[comparison_df['Model'] == 'Neural Network', 'Accuracy'].values[0]
+        baseline_fn = comparison_df.loc[comparison_df['Model'] == 'Neural Network', 'FN'].values[0]
+        baseline_tp = comparison_df.loc[comparison_df['Model'] == 'Neural Network', 'TP'].values[0]
+        baseline_fn_pct = baseline_fn / (baseline_fn + baseline_tp)
+
+        smote_acc = comparison_df.loc[comparison_df['Model'] == 'NN (Tuned + SMOTE)', 'Accuracy'].values[0]
+        smote_auc = comparison_df.loc[comparison_df['Model'] == 'NN (Tuned + SMOTE)', 'ROC-AUC'].values[0]
+        smote_fn = comparison_df.loc[comparison_df['Model'] == 'NN (Tuned + SMOTE)', 'FN'].values[0]
+        smote_tp = comparison_df.loc[comparison_df['Model'] == 'NN (Tuned + SMOTE)', 'TP'].values[0]
+        smote_fp = comparison_df.loc[comparison_df['Model'] == 'NN (Tuned + SMOTE)', 'FP'].values[0]
+
+        st.markdown(f"""
+        ### The Problem: Accuracy vs. Reality
+        Our baseline models, including the top-performing **`Neural Network`**, all achieved a high and misleading **Accuracy of {baseline_acc:.1%}**. 
+        A closer look at the results showed this was a failure, not a success. The models were simply guessing the majority "No Injury" class ({pct_0:.1%} of the data) and failed to learn the patterns for the "Injury" class.
+        
+        This is proven by the **{baseline_fn:,} False Negatives**—our best baseline model *failed to identify {baseline_fn_pct:.1%} of all actual injury crashes.*
+        
+        ### The Solution: SMOTE's Impact
+        Our goal was to fix this imbalance. The comparison table clearly shows the effect of our strategies:
+        
+        * **1. `NN (Tuned, No SMOTE)`:** Hyperparameter tuning alone provided **no meaningful improvement**. The metrics are identical to the baseline, proving the model's weakness was not its parameters, but the imbalanced data.
+        
+        * **2. `NN (Tuned + SMOTE)`:** Applying SMOTE to the training data **fundamentally fixed the model's behavior.**
+            * **False Negatives** (missed injuries) plummeted from **{baseline_fn:,}** to **{smote_fn:,}**.
+            * **True Positives** (found injuries) skyrocketed from **{baseline_tp:,}** to **{smote_tp:,}**.
+        
+        This model did see its `Accuracy` drop to **{smote_acc:.1%}** and its `ROC-AUC` (distinguishing power) stay flat at **{smote_auc:.3f}**. 
+        This is an expected trade-off: in forcing the model to find the rare "Injury" class, it made more mistakes on the "No Injury" class (**{smote_fp:,}** False Positives).
+        
+        ### Final Recommendation
+        
+        **The `NN (Tuned + SMOTE)` model is the *only* useful model for this problem.**
+        
+        For a public safety analysis, the cost of a **False Negative** (missing an injury) is far higher than the cost of a **False Positive** (flagging a safe crash for review). 
+        The SMOTE-trained model was the *only one* capable of achieving the primary goal: finding the crashes that result in injury. It successfully identified **{smote_tp - baseline_tp:,} more injury crashes** than the baseline, making it the superior choice.
+        
+        The low final `ROC-AUC` (**{smote_auc:.3f}**) suggests we have reached the limit of what our current features (borough, time, cause) can predict. 
+        Future work must focus on **engineering new features** (e.g., weather data, road type, speed limits) to improve the model's ability to distinguish between a crash and an *injurious* crash.
+        """)
+    except Exception as e:
+        st.error(f"Could not generate final report. {e}")
+    # --- END: DYNAMIC CONCLUSION ---
