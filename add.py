@@ -49,7 +49,7 @@ RANDOM_SEED = 42
 
 @st.cache_data
 def load_data():
-    """Loads 50k rows from the NYC OpenData API."""
+    """Loads 50k rows from the NYC OpenData API and aggressively cleans for caching."""
     st.write("Cache miss: Loading 50,000 rows from NYC OpenData API...")
     data_url = "https://data.cityofnewyork.us/resource/h9gi-nx95.json"
     params = {
@@ -61,6 +61,12 @@ def load_data():
         if response.status_code == 200:
             data = response.json()
             df = pd.DataFrame(data)
+            
+            # --- AGGRESSIVE FIX: Convert all columns to string to guarantee hashability ---
+            for col in df.columns:
+                df[col] = df[col].astype(str)
+            # --- AGGRESSIVE FIX END ---
+            
             return df
         else:
             st.error(f"Failed to load data: {response.status_code}")
@@ -71,23 +77,13 @@ def load_data():
 
 @st.cache_data
 def clean_and_engineer(df_raw):
-    """Cleans data, engineers features, and creates X and Y.
-    
-    CRITICAL FIX: Converts all object columns to string to handle the 'unhashable type: dict' 
-    error during Streamlit caching.
-    """
+    """Cleans data, engineers features, and creates X and Y."""
     st.write("Cache miss: Cleaning data and engineering features...")
     df = df_raw.copy()
     
-    # --- CRITICAL FIX START: This must be the first processing step on the copy ---
-    # Force convert ALL object columns to string to ensure hashable data types for caching.
-    # The API sometimes returns columns with nested dictionaries/lists that Pandas
-    # interprets as 'object' dtype, which Streamlit cannot cache.
-    for col in df.select_dtypes(include=['object']).columns:
-        df[col] = df[col].astype(str)
-    # --- CRITICAL FIX END ---
+    # Since load_data converts everything to str, we skip the object-to-str check here
     
-    # --- 1. Clean ALL Numeric Columns ---
+    # --- 1. Clean ALL Numeric Columns (Converting from string now) ---
     numeric_cols = [
         'number_of_persons_injured', 'number_of_persons_killed',
         'number_of_pedestrians_injured', 'number_of_pedestrians_killed',
@@ -100,7 +96,8 @@ def clean_and_engineer(df_raw):
     
     # --- 2. Clean Temporal/Categorical Columns ---
     df['crash_date'] = pd.to_datetime(df['crash_date'])
-    df['crash_hour'] = pd.to_datetime(df['crash_time'], format='%H:%M', errors='coerce').dt.hour.fillna(-1).astype(int)
+    # Need to handle potential NaN values after string conversion for crash_time
+    df['crash_hour'] = pd.to_datetime(df['crash_time'].str.strip(), format='%H:%M', errors='coerce').dt.hour.fillna(-1).astype(int)
     df['day_of_week'] = df['crash_date'].dt.day_name().fillna("Unspecified")
     df['month'] = df['crash_date'].dt.month
     
@@ -197,8 +194,20 @@ def train_baseline_models(_X_train, _y_train, _preprocessor):
 
 @st.cache_resource
 def train_tuned_models(_X_train, _y_train, _preprocessor):
-    """Runs GridSearchCV for the two NN models."""
+    """Runs GridSearchCV for the two NN models on a sampled dataset."""
     st.write("Cache miss: Tuning Neural Networks (this may take several minutes)...")
+    
+    # --- CRITICAL FIX FOR MEMORY LIMITS START ---
+    # Apply a 50% stratified sample of the training data to reduce the load on GridSearchCV/SMOTE
+    if len(_X_train) > 10000:
+        X_train_sampled, _, y_train_sampled, _ = train_test_split(
+            _X_train, _y_train, train_size=0.5, random_state=RANDOM_SEED, stratify=_y_train
+        )
+        st.write(f"Tuning on a reduced sample size: {len(X_train_sampled)} rows.")
+    else:
+        X_train_sampled = _X_train
+        y_train_sampled = _y_train
+    # --- CRITICAL FIX FOR MEMORY LIMITS END ---
     
     param_grid = {
         'classifier__hidden_layer_sizes': [(50,), (100,)], # Smaller grid for app speed
@@ -211,9 +220,10 @@ def train_tuned_models(_X_train, _y_train, _preprocessor):
         ('classifier', MLPClassifier(random_state=RANDOM_SEED, max_iter=1000, early_stopping=True))
     ])
     grid_search_no_smote = GridSearchCV(
-        pipeline_no_smote, param_grid, cv=3, scoring='roc_auc', n_jobs=-1, verbose=2
+        pipeline_no_smote, param_grid, cv=2, scoring='roc_auc', n_jobs=-1, verbose=1 # Reduced CV for stability
     )
-    grid_search_no_smote.fit(_X_train, _y_train)
+    # Fit on the sampled data
+    grid_search_no_smote.fit(X_train_sampled, y_train_sampled)
     st.write("Tuning (No SMOTE) complete.")
     
     # --- 2. "WITH SMOTE" Grid Search ---
@@ -223,9 +233,10 @@ def train_tuned_models(_X_train, _y_train, _preprocessor):
         ('classifier', MLPClassifier(random_state=RANDOM_SEED, max_iter=1000, early_stopping=True))
     ])
     grid_search_with_smote = GridSearchCV(
-        pipeline_with_smote, param_grid, cv=3, scoring='roc_auc', n_jobs=-1, verbose=2
+        pipeline_with_smote, param_grid, cv=2, scoring='roc_auc', n_jobs=-1, verbose=1 # Reduced CV for stability
     )
-    grid_search_with_smote.fit(_X_train, _y_train)
+    # Fit on the sampled data
+    grid_search_with_smote.fit(X_train_sampled, y_train_sampled)
     st.write("Tuning (WITH SMOTE) complete.")
     
     return grid_search_no_smote, grid_search_with_smote
@@ -637,6 +648,14 @@ elif page == "Predictive Modeling (Baseline)":
 
 elif page == "Predictive Modeling (Tuning & SMOTE)":
     st.header("Tuning the Neural Network & Fixing Imbalance")
+    
+    # --- UI EXPLANATION FOR SAMPLING FIX ---
+    st.info("""
+    **Note on Stability (Resource Management):**
+    The process of hyperparameter tuning (`GridSearchCV`) combined with synthetic data generation (`SMOTE`) is extremely memory-intensive. To prevent the application from crashing due to resource limits in the deployment environment, the tuning process is now performed on a **stratified 50% sample** of the original training data. All final results (metrics, confusion matrices) are calculated against the **full 20% test set** to ensure the final model evaluation remains accurate.
+    """)
+    # --- END UI EXPLANATION ---
+
     st.markdown("""
     The baseline models failed because they could not find the rare "Injury" class. 
     We will now try two strategies:
@@ -644,7 +663,7 @@ elif page == "Predictive Modeling (Tuning & SMOTE)":
     2.  **Tuning + SMOTE:** Tune the Neural Network *after* using SMOTE to create a balanced training dataset.
     """)
 
-    with st.spinner("Tuning Neural Networks (first load may take 10+ minutes)..."):
+    with st.spinner("Tuning Neural Networks (this may take 10+ minutes)..."):
         model_no_smote, model_with_smote = train_tuned_models(X_train, y_train, preprocessor)
     
     # Get baseline results to compare
