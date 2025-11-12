@@ -14,7 +14,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from imblearn.pipeline import Pipeline as ImbPipeline
 from imblearn.over_sampling import SMOTE
-from imblearn.over_sampling import RandomOverSampler # New idea: Use ROS for simpler SMOTE testing
 from sklearn.metrics import (
     classification_report, 
     roc_auc_score, 
@@ -200,8 +199,9 @@ def train_tuned_models(_X_train, _y_train, _preprocessor):
     
     # --- MEMORY STABILITY FIX: Sample the training data for faster/safer GridSearchCV ---
     if len(_X_train) > 10000 and TUNING_SAMPLE_SIZE < 1.0:
+        # FIX APPLIED: Changed RANDRDM_SEED to RANDOM_SEED
         X_train_sampled, _, y_train_sampled, _ = train_test_split(
-            _X_train, _y_train, train_size=TUNING_SAMPLE_SIZE, random_state=RANDRDM_SEED, stratify=_y_train
+            _X_train, _y_train, train_size=TUNING_SAMPLE_SIZE, random_state=RANDOM_SEED, stratify=_y_train
         )
         st.write(f"Tuning on a reduced sample size ({TUNING_SAMPLE_SIZE*100:.0f}%): {len(X_train_sampled)} rows.")
     else:
@@ -250,7 +250,6 @@ def train_tuned_models(_X_train, _y_train, _preprocessor):
     st.write("Training (Tuned + SMOTE) complete on full training data.")
 
     # Return a fake GridSearch object for the SMOTE pipeline to maintain the original analysis flow
-    # Since we only trained one model, we return that model wrapped in a dict.
     class FakeGridSearch:
         def __init__(self, best_estimator):
             self.best_estimator_ = best_estimator
