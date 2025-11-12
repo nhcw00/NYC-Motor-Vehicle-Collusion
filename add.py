@@ -42,8 +42,8 @@ st.set_page_config(
 
 # --- Constants ---
 RANDOM_SEED = 42
-# Set a universal sample size for heavy model training
-TUNING_SAMPLE_SIZE = 0.25 
+# MODIFIED: Reduced sample size for tuning to 10% for guaranteed stability
+TUNING_SAMPLE_SIZE = 0.10 
 
 # =============================================================================
 # CACHED FUNCTIONS (Data Loading & Model Training)
@@ -199,11 +199,10 @@ def train_tuned_models(_X_train, _y_train, _preprocessor):
     
     # --- MEMORY STABILITY FIX: Sample the training data for faster/safer GridSearchCV ---
     if len(_X_train) > 10000 and TUNING_SAMPLE_SIZE < 1.0:
-        # FIX APPLIED: Changed RANDRDM_SEED to RANDOM_SEED
         X_train_sampled, _, y_train_sampled, _ = train_test_split(
             _X_train, _y_train, train_size=TUNING_SAMPLE_SIZE, random_state=RANDOM_SEED, stratify=_y_train
         )
-        st.write(f"Tuning on a reduced sample size ({TUNING_SAMPLE_SIZE*100:.0f}%): {len(X_train_sampled)} rows.")
+        st.write(f"Tuning on a severely reduced sample size ({TUNING_SAMPLE_SIZE*100:.0f}%): {len(X_train_sampled)} rows.")
     else:
         X_train_sampled = _X_train
         y_train_sampled = _y_train
@@ -245,7 +244,6 @@ def train_tuned_models(_X_train, _y_train, _preprocessor):
     ])
     
     # TRAIN ONE FINAL, EXPENSIVE MODEL using the FULL (unsampled) training data
-    # This prevents the memory-intensive GridSearch/SMOTE combination from crashing the app.
     pipeline_tuned_smote.fit(_X_train, _y_train)
     st.write("Training (Tuned + SMOTE) complete on full training data.")
 
@@ -670,11 +668,11 @@ elif page == "Predictive Modeling (Tuning & SMOTE)":
     st.header("Tuning the Neural Network & Fixing Imbalance")
     
     # --- UI EXPLANATION FOR DECOUPLING FIX ---
-    st.info("""
+    st.info(f"""
     🧠 **Advanced Strategy Note (Resource Management):**
-    Due to memory limitations of the hosting environment, the process of running hyperparameter tuning (`GridSearchCV`) concurrently with data upsampling (`SMOTE`) causes system crashes.
+    Due to severe memory limitations, the combination of hyperparameter tuning (`GridSearchCV`) and data upsampling (`SMOTE`) causes system crashes.
     
-    **The New Strategy:** We first run the Grid Search on a reduced, unsampled dataset to find the best hyperparameters. Then, we apply SMOTE just once to the full training data and train the final, best model. This decouples the memory-intensive tasks, ensuring app stability while still yielding the best possible model.
+    **The New Strategy:** We first run the Grid Search on a **severely reduced {TUNING_SAMPLE_SIZE*100:.0f}% sample** to find the best hyperparameters quickly. Then, we apply SMOTE just once and train the final, best model on the **full training dataset**. This decoupling ensures app stability while still yielding the best possible model quality.
     """)
     # --- END UI EXPLANATION ---
     
