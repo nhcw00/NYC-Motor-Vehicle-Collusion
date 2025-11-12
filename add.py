@@ -73,16 +73,17 @@ def load_data():
 def clean_and_engineer(df_raw):
     """Cleans data, engineers features, and creates X and Y.
     
-    Includes a fix for the 'unhashable type: dict' cache error 
-    by forcing object columns to string type.
+    CRITICAL FIX: Converts all object columns to string to handle the 'unhashable type: dict' 
+    error during Streamlit caching.
     """
     st.write("Cache miss: Cleaning data and engineering features...")
     df = df_raw.copy()
     
-    # --- FIX: Convert ALL object columns to string to handle unhashable types for caching ---
+    # --- CRITICAL FIX START ---
+    # Force convert ALL object columns to string to ensure hashable data types for caching
     for col in df.select_dtypes(include=['object']).columns:
         df[col] = df[col].astype(str)
-    # ----------------------------------------------------------------------------------------
+    # --- CRITICAL FIX END ---
     
     # --- 1. Clean ALL Numeric Columns ---
     numeric_cols = [
@@ -400,13 +401,18 @@ elif page == "Descriptive Analysis":
     with col1:
         fig1, ax1 = plt.subplots()
         # Filter out the placeholder -1 hour
-        sns.countplot(x='crash_hour', data=df[df['crash_hour'] != -1], ax=ax1, palette='viridis')
+        # Suppress FutureWarning about 'palette' as the code uses it correctly for the visual purpose intended
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            sns.countplot(x='crash_hour', data=df[df['crash_hour'] != -1], ax=ax1, palette='viridis')
         ax1.set_title('Collisions by Hour of Day')
         st.pyplot(fig1)
     with col2:
         fig2, ax2 = plt.subplots()
-        sns.countplot(x='day_of_week', data=df, ax=ax2, palette='plasma',
-                      order=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            sns.countplot(x='day_of_week', data=df, ax=ax2, palette='plasma',
+                          order=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
         ax2.set_title('Collisions by Day of Week')
         ax2.tick_params(axis='x', rotation=45)
         st.pyplot(fig2)
@@ -414,8 +420,9 @@ elif page == "Descriptive Analysis":
     # --- Time-Series and Heatmap ---
     st.write("---")
     fig3, ax3 = plt.subplots(figsize=(12, 6))
-    # Using 'ME' (Month End) instead of 'M' to silence FutureWarning, though 'M' often works
-    df.set_index('crash_date').resample('ME').size().plot(ax=ax3) 
+    with warnings.catch_warnings():
+         warnings.simplefilter("ignore", FutureWarning)
+         df.set_index('crash_date').resample('ME').size().plot(ax=ax3) 
     ax3.set_title('Collisions Over Time (Monthly Trend)')
     st.pyplot(fig3)
     
@@ -431,8 +438,10 @@ elif page == "Descriptive Analysis":
 
     st.subheader("Where do collisions occur?")
     fig5, ax5 = plt.subplots(figsize=(10, 5))
-    sns.countplot(y='borough', data=df, ax=ax5, palette='coolwarm',
-                  order=df['borough'].value_counts().index)
+    with warnings.catch_warnings():
+         warnings.simplefilter("ignore", FutureWarning)
+         sns.countplot(y='borough', data=df, ax=ax5, palette='coolwarm',
+                      order=df['borough'].value_counts().index)
     ax5.set_title('Total Collisions by Borough')
     st.pyplot(fig5)
     
@@ -477,12 +486,13 @@ elif page == "Descriptive Analysis":
     
     st.write("---")
     fig8, ax8 = plt.subplots(figsize=(12, 7))
-    # Using 'ME' (Month End) instead of 'M' to silence FutureWarning
-    victim_trends = df.set_index('crash_date').resample('ME')[['number_of_pedestrians_injured', 'number_of_cyclist_injured', 'number_of_motorist_injured']].sum().rename(columns={
-        'number_of_pedestrians_injured': 'Pedestrians Injured',
-        'number_of_cyclist_injured': 'Cyclists Injured',
-        'number_of_motorist_injured': 'Motorists Injured'
-    })
+    with warnings.catch_warnings():
+         warnings.simplefilter("ignore", FutureWarning)
+         victim_trends = df.set_index('crash_date').resample('ME')[['number_of_pedestrians_injured', 'number_of_cyclist_injured', 'number_of_motorist_injured']].sum().rename(columns={
+             'number_of_pedestrians_injured': 'Pedestrians Injured',
+             'number_of_cyclist_injured': 'Cyclists Injured',
+             'number_of_motorist_injured': 'Motorists Injured'
+         })
     victim_trends.plot(ax=ax8, colormap='Dark2')
     ax8.set_title('Monthly Injuries by Victim Type')
     st.pyplot(fig8)
@@ -513,7 +523,9 @@ elif page == "Diagnostic Analysis":
     fig_factor, ax_factor = plt.subplots(figsize=(12, 8))
     factor_data = df[df['contributing_factor_vehicle_1'] != 'Unspecified']['contributing_factor_vehicle_1']
     factor_counts = factor_data.value_counts().nlargest(15)
-    sns.barplot(x=factor_counts.values, y=factor_counts.index, palette='rocket', ax=ax_factor)
+    with warnings.catch_warnings():
+         warnings.simplefilter("ignore", FutureWarning)
+         sns.barplot(x=factor_counts.values, y=factor_counts.index, palette='rocket', ax=ax_factor)
     ax_factor.set_title('Top 15 Contributing Factors for Collisions (Vehicle 1)')
     st.pyplot(fig_factor)
     
@@ -524,7 +536,9 @@ elif page == "Diagnostic Analysis":
         fatal_factor_data = fatal_crashes[fatal_crashes['contributing_factor_vehicle_1'] != 'Unspecified']['contributing_factor_vehicle_1']
         fatal_factor_counts = fatal_factor_data.value_counts().nlargest(15)
         if not fatal_factor_counts.empty:
-            sns.barplot(x=fatal_factor_counts.values, y=fatal_factor_counts.index, palette='Reds_r', ax=ax_fatal)
+            with warnings.catch_warnings():
+                 warnings.simplefilter("ignore", FutureWarning)
+                 sns.barplot(x=fatal_factor_counts.values, y=fatal_factor_counts.index, palette='Reds_r', ax=ax_fatal)
             ax_fatal.set_title('Top 15 Contributing Factors in *Fatal* Collisions (Vehicle 1)')
         else:
             st.write("No fatal crashes with specified factors in this sample.")
@@ -538,7 +552,9 @@ elif page == "Diagnostic Analysis":
     fig_vehicle, ax_vehicle = plt.subplots(figsize=(12, 8))
     vehicle_data = df[df['vehicle_type_code1'] != 'Unspecified']['vehicle_type_code1']
     vehicle_counts = vehicle_data.value_counts().nlargest(15)
-    sns.barplot(x=vehicle_counts.values, y=vehicle_counts.index, palette='Spectral', ax=ax_vehicle)
+    with warnings.catch_warnings():
+         warnings.simplefilter("ignore", FutureWarning)
+         sns.barplot(x=vehicle_counts.values, y=vehicle_counts.index, palette='Spectral', ax=ax_vehicle)
     ax_vehicle.set_title('Top 15 Vehicle Types Involved in Collisions (Vehicle 1)')
     st.pyplot(fig_vehicle)
 
