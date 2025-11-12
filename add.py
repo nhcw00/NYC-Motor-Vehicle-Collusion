@@ -79,8 +79,10 @@ def clean_and_engineer(df_raw):
     st.write("Cache miss: Cleaning data and engineering features...")
     df = df_raw.copy()
     
-    # --- CRITICAL FIX START ---
-    # Force convert ALL object columns to string to ensure hashable data types for caching
+    # --- CRITICAL FIX START: This must be the first processing step on the copy ---
+    # Force convert ALL object columns to string to ensure hashable data types for caching.
+    # The API sometimes returns columns with nested dictionaries/lists that Pandas
+    # interprets as 'object' dtype, which Streamlit cannot cache.
     for col in df.select_dtypes(include=['object']).columns:
         df[col] = df[col].astype(str)
     # --- CRITICAL FIX END ---
@@ -401,7 +403,6 @@ elif page == "Descriptive Analysis":
     with col1:
         fig1, ax1 = plt.subplots()
         # Filter out the placeholder -1 hour
-        # Suppress FutureWarning about 'palette' as the code uses it correctly for the visual purpose intended
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", FutureWarning)
             sns.countplot(x='crash_hour', data=df[df['crash_hour'] != -1], ax=ax1, palette='viridis')
@@ -562,7 +563,11 @@ elif page == "Diagnostic Analysis":
     st.subheader("What are the most common collision types?")
     with st.spinner("Building Sankey diagram..."):
         sankey_fig = create_sankey_fig(df)
-        st.plotly_chart(sankey_fig, use_container_width=True)
+        # Suppress future warning regarding use_container_width
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning, module='streamlit')
+            st.plotly_chart(sankey_fig, use_container_width=True)
+        
         # Save the Sankey diagram to HTML
         sankey_filename = '5_2_vehicle_sankey_diagram.html'
         sankey_fig.write_html(sankey_filename)
