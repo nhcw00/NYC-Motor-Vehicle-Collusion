@@ -62,10 +62,11 @@ def load_data():
             data = response.json()
             df = pd.DataFrame(data)
             
-            # --- AGGRESSIVE FIX: Convert all columns to string to guarantee hashability ---
+            # --- CRITICAL FIX: Convert all columns to string to guarantee hashability ---
+            # This prevents the recurring 'TypeError: unhashable type: dict' cache crash.
             for col in df.columns:
                 df[col] = df[col].astype(str)
-            # --- AGGRESSIVE FIX END ---
+            # --- CRITICAL FIX END ---
             
             return df
         else:
@@ -81,8 +82,6 @@ def clean_and_engineer(df_raw):
     st.write("Cache miss: Cleaning data and engineering features...")
     df = df_raw.copy()
     
-    # Since load_data converts everything to str, we skip the object-to-str check here
-    
     # --- 1. Clean ALL Numeric Columns (Converting from string now) ---
     numeric_cols = [
         'number_of_persons_injured', 'number_of_persons_killed',
@@ -96,7 +95,7 @@ def clean_and_engineer(df_raw):
     
     # --- 2. Clean Temporal/Categorical Columns ---
     df['crash_date'] = pd.to_datetime(df['crash_date'])
-    # Need to handle potential NaN values after string conversion for crash_time
+    # Handle potential NaN values after string conversion for crash_time
     df['crash_hour'] = pd.to_datetime(df['crash_time'].str.strip(), format='%H:%M', errors='coerce').dt.hour.fillna(-1).astype(int)
     df['day_of_week'] = df['crash_date'].dt.day_name().fillna("Unspecified")
     df['month'] = df['crash_date'].dt.month
@@ -197,20 +196,21 @@ def train_tuned_models(_X_train, _y_train, _preprocessor):
     """Runs GridSearchCV for the two NN models on a sampled dataset."""
     st.write("Cache miss: Tuning Neural Networks (this may take several minutes)...")
     
-    # --- CRITICAL FIX FOR MEMORY LIMITS START ---
-    # Apply a 50% stratified sample of the training data to reduce the load on GridSearchCV/SMOTE
+    # --- AGGRESSIVE MEMORY FIX START: Sample 25% of training data for stability ---
+    # This sample size is critical for avoiding memory crashes during the combination 
+    # of GridSearch + SMOTE on low-resource hosting environments.
     if len(_X_train) > 10000:
         X_train_sampled, _, y_train_sampled, _ = train_test_split(
-            _X_train, _y_train, train_size=0.5, random_state=RANDOM_SEED, stratify=_y_train
+            _X_train, _y_train, train_size=0.25, random_state=RANDOM_SEED, stratify=_y_train
         )
-        st.write(f"Tuning on a reduced sample size: {len(X_train_sampled)} rows.")
+        st.write(f"Tuning on a severely reduced sample size: {len(X_train_sampled)} rows.")
     else:
         X_train_sampled = _X_train
         y_train_sampled = _y_train
-    # --- CRITICAL FIX FOR MEMORY LIMITS END ---
+    # --- AGGRESSIVE MEMORY FIX END ---
     
     param_grid = {
-        'classifier__hidden_layer_sizes': [(50,), (100,)], # Smaller grid for app speed
+        'classifier__hidden_layer_sizes': [(50,), (100,)], # Small grid for app speed
         'classifier__alpha': [0.0001, 0.001],
     }
 
@@ -229,7 +229,7 @@ def train_tuned_models(_X_train, _y_train, _preprocessor):
     # --- 2. "WITH SMOTE" Grid Search ---
     pipeline_with_smote = ImbPipeline(steps=[
         ('preprocessor', _preprocessor),
-        ('smote', SMOTE(random_state=RANDOM_SEED)), # <-- Add SMOTE step
+        ('smote', SMOTE(random_state=RANDOM_SEED)),
         ('classifier', MLPClassifier(random_state=RANDOM_SEED, max_iter=1000, early_stopping=True))
     ])
     grid_search_with_smote = GridSearchCV(
@@ -651,11 +651,11 @@ elif page == "Predictive Modeling (Tuning & SMOTE)":
     
     # --- UI EXPLANATION FOR SAMPLING FIX ---
     st.info("""
-    **Note on Stability (Resource Management):**
-    The process of hyperparameter tuning (`GridSearchCV`) combined with synthetic data generation (`SMOTE`) is extremely memory-intensive. To prevent the application from crashing due to resource limits in the deployment environment, the tuning process is now performed on a **stratified 50% sample** of the original training data. All final results (metrics, confusion matrices) are calculated against the **full 20% test set** to ensure the final model evaluation remains accurate.
+    ⚠️ **Model Stability Note (Resource Management):**
+    The process of hyperparameter tuning (`GridSearchCV`) combined with synthetic data generation (`SMOTE`) is extremely memory-intensive. To prevent the application from crashing due to resource limits in the deployment environment, the tuning process is now performed on a **stratified 25% sample** of the original training data. All final results (metrics, confusion matrices) are calculated against the **full 20% test set** to ensure the final model evaluation remains accurate and reflective of the real-world performance.
     """)
     # --- END UI EXPLANATION ---
-
+    
     st.markdown("""
     The baseline models failed because they could not find the rare "Injury" class. 
     We will now try two strategies:
@@ -663,7 +663,7 @@ elif page == "Predictive Modeling (Tuning & SMOTE)":
     2.  **Tuning + SMOTE:** Tune the Neural Network *after* using SMOTE to create a balanced training dataset.
     """)
 
-    with st.spinner("Tuning Neural Networks (this may take 10+ minutes)..."):
+    with st.spinner("Tuning Neural Networks (this may take several minutes)..."):
         model_no_smote, model_with_smote = train_tuned_models(X_train, y_train, preprocessor)
     
     # Get baseline results to compare
