@@ -14,6 +14,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from imblearn.pipeline import Pipeline as ImbPipeline
 from imblearn.over_sampling import SMOTE
+from imblearn.over_sampling import RandomOverSampler # New idea: Use ROS for simpler SMOTE testing
 from sklearn.metrics import (
     classification_report, 
     roc_auc_score, 
@@ -42,6 +43,8 @@ st.set_page_config(
 
 # --- Constants ---
 RANDOM_SEED = 42
+# Set a universal sample size for heavy model training
+TUNING_SAMPLE_SIZE = 0.25 
 
 # =============================================================================
 # CACHED FUNCTIONS (Data Loading & Model Training)
@@ -63,7 +66,6 @@ def load_data():
             df = pd.DataFrame(data)
             
             # --- CRITICAL FIX: Convert all columns to string to guarantee hashability ---
-            # This prevents the recurring 'TypeError: unhashable type: dict' cache crash.
             for col in df.columns:
                 df[col] = df[col].astype(str)
             # --- CRITICAL FIX END ---
@@ -193,22 +195,20 @@ def train_baseline_models(_X_train, _y_train, _preprocessor):
 
 @st.cache_resource
 def train_tuned_models(_X_train, _y_train, _preprocessor):
-    """Runs GridSearchCV for the two NN models on a sampled dataset."""
+    """Runs GridSearchCV for the two NN models on a sampled dataset with DECOUPLED SMOTE."""
     st.write("Cache miss: Tuning Neural Networks (this may take several minutes)...")
     
-    # --- AGGRESSIVE MEMORY FIX START: Sample 25% of training data for stability ---
-    # This sample size is critical for avoiding memory crashes during the combination 
-    # of GridSearch + SMOTE on low-resource hosting environments.
-    if len(_X_train) > 10000:
+    # --- MEMORY STABILITY FIX: Sample the training data for faster/safer GridSearchCV ---
+    if len(_X_train) > 10000 and TUNING_SAMPLE_SIZE < 1.0:
         X_train_sampled, _, y_train_sampled, _ = train_test_split(
-            _X_train, _y_train, train_size=0.25, random_state=RANDOM_SEED, stratify=_y_train
+            _X_train, _y_train, train_size=TUNING_SAMPLE_SIZE, random_state=RANDRDM_SEED, stratify=_y_train
         )
-        st.write(f"Tuning on a severely reduced sample size: {len(X_train_sampled)} rows.")
+        st.write(f"Tuning on a reduced sample size ({TUNING_SAMPLE_SIZE*100:.0f}%): {len(X_train_sampled)} rows.")
     else:
         X_train_sampled = _X_train
         y_train_sampled = _y_train
-    # --- AGGRESSIVE MEMORY FIX END ---
-    
+    # --- END MEMORY STABILITY FIX ---
+
     param_grid = {
         'classifier__hidden_layer_sizes': [(50,), (100,)], # Small grid for app speed
         'classifier__alpha': [0.0001, 0.001],
@@ -220,26 +220,46 @@ def train_tuned_models(_X_train, _y_train, _preprocessor):
         ('classifier', MLPClassifier(random_state=RANDOM_SEED, max_iter=1000, early_stopping=True))
     ])
     grid_search_no_smote = GridSearchCV(
-        pipeline_no_smote, param_grid, cv=2, scoring='roc_auc', n_jobs=-1, verbose=1 # Reduced CV for stability
+        pipeline_no_smote, param_grid, cv=2, scoring='roc_auc', n_jobs=-1, verbose=1
     )
     # Fit on the sampled data
     grid_search_no_smote.fit(X_train_sampled, y_train_sampled)
-    st.write("Tuning (No SMOTE) complete.")
+    st.write("Tuning (No SMOTE) complete. Best parameters found.")
     
-    # --- 2. "WITH SMOTE" Grid Search ---
-    pipeline_with_smote = ImbPipeline(steps=[
+    # --- 2. DECOUPLED: "Final Tuned + SMOTE" Model ---
+    # Retrieve the best params from the non-SMOTE GridSearch (cheaper)
+    best_params = grid_search_no_smote.best_params_
+    st.write(f"Retraining best NN model found: {best_params['classifier__hidden_layer_sizes']} layers, alpha={best_params['classifier__alpha']}")
+
+    # Create the final SMOTE pipeline using the best params
+    pipeline_tuned_smote = ImbPipeline(steps=[
         ('preprocessor', _preprocessor),
         ('smote', SMOTE(random_state=RANDOM_SEED)),
-        ('classifier', MLPClassifier(random_state=RANDOM_SEED, max_iter=1000, early_stopping=True))
+        ('classifier', MLPClassifier(
+            random_state=RANDOM_SEED, 
+            max_iter=1000, 
+            early_stopping=True,
+            hidden_layer_sizes=best_params['classifier__hidden_layer_sizes'],
+            alpha=best_params['classifier__alpha']
+        ))
     ])
-    grid_search_with_smote = GridSearchCV(
-        pipeline_with_smote, param_grid, cv=2, scoring='roc_auc', n_jobs=-1, verbose=1 # Reduced CV for stability
-    )
-    # Fit on the sampled data
-    grid_search_with_smote.fit(X_train_sampled, y_train_sampled)
-    st.write("Tuning (WITH SMOTE) complete.")
     
-    return grid_search_no_smote, grid_search_with_smote
+    # TRAIN ONE FINAL, EXPENSIVE MODEL using the FULL (unsampled) training data
+    # This prevents the memory-intensive GridSearch/SMOTE combination from crashing the app.
+    pipeline_tuned_smote.fit(_X_train, _y_train)
+    st.write("Training (Tuned + SMOTE) complete on full training data.")
+
+    # Return a fake GridSearch object for the SMOTE pipeline to maintain the original analysis flow
+    # Since we only trained one model, we return that model wrapped in a dict.
+    class FakeGridSearch:
+        def __init__(self, best_estimator):
+            self.best_estimator_ = best_estimator
+        def predict(self, X):
+            return self.best_estimator_.predict(X)
+        def predict_proba(self, X):
+            return self.best_estimator_.predict_proba(X)
+
+    return grid_search_no_smote, FakeGridSearch(pipeline_tuned_smote)
 
 # =============================================================================
 # HELPER FUNCTIONS (Plotting & Analysis)
@@ -273,6 +293,7 @@ def get_baseline_results(trained_models, X_test, y_test):
 def get_tuned_results(baseline_results_df, model_no_smote, model_with_smote, X_test, y_test):
     """Generates predictions and results from tuned models."""
     
+    # Use the 'Neural Network' row from baseline for comparison
     baseline_nn_row = baseline_results_df[baseline_results_df['Model'] == 'Neural Network'].iloc[0].to_dict()
     
     # 1. Evaluate "Tuned (No SMOTE)"
@@ -287,7 +308,7 @@ def get_tuned_results(baseline_results_df, model_no_smote, model_with_smote, X_t
         "TP": tp_no_smote, "TN": tn_no_smote, "FP": fp_no_smote, "FN": fn_no_smote
     }
     
-    # 2. Evaluate "Tuned (WITH SMOTE)"
+    # 2. Evaluate "Tuned (WITH SMOTE)" - model_with_smote is now a FakeGridSearch holding the final model
     y_pred_with_smote = model_with_smote.predict(X_test)
     y_pred_proba_with_smote = model_with_smote.predict_proba(X_test)[:, 1]
     cm_with_smote = confusion_matrix(y_test, y_pred_with_smote)
@@ -649,18 +670,20 @@ elif page == "Predictive Modeling (Baseline)":
 elif page == "Predictive Modeling (Tuning & SMOTE)":
     st.header("Tuning the Neural Network & Fixing Imbalance")
     
-    # --- UI EXPLANATION FOR SAMPLING FIX ---
+    # --- UI EXPLANATION FOR DECOUPLING FIX ---
     st.info("""
-    ⚠️ **Model Stability Note (Resource Management):**
-    The process of hyperparameter tuning (`GridSearchCV`) combined with synthetic data generation (`SMOTE`) is extremely memory-intensive. To prevent the application from crashing due to resource limits in the deployment environment, the tuning process is now performed on a **stratified 25% sample** of the original training data. All final results (metrics, confusion matrices) are calculated against the **full 20% test set** to ensure the final model evaluation remains accurate and reflective of the real-world performance.
+    🧠 **Advanced Strategy Note (Resource Management):**
+    Due to memory limitations of the hosting environment, the process of running hyperparameter tuning (`GridSearchCV`) concurrently with data upsampling (`SMOTE`) causes system crashes.
+    
+    **The New Strategy:** We first run the Grid Search on a reduced, unsampled dataset to find the best hyperparameters. Then, we apply SMOTE just once to the full training data and train the final, best model. This decouples the memory-intensive tasks, ensuring app stability while still yielding the best possible model.
     """)
     # --- END UI EXPLANATION ---
     
     st.markdown("""
     The baseline models failed because they could not find the rare "Injury" class. 
     We will now try two strategies:
-    1.  **Tuning:** Tune the best baseline model (Neural Network) to optimize its parameters.
-    2.  **Tuning + SMOTE:** Tune the Neural Network *after* using SMOTE to create a balanced training dataset.
+    1.  **Tuning (No SMOTE):** Find the best hyperparameters ($\alpha$ and hidden layers) without running memory-intensive resampling.
+    2.  **Tuning + SMOTE (Final Retrain):** Apply the best hyperparameters to a final model trained on the full dataset, utilizing SMOTE once.
     """)
 
     with st.spinner("Tuning Neural Networks (this may take several minutes)..."):
@@ -707,8 +730,8 @@ elif page == "Predictive Modeling (Tuning & SMOTE)":
         
         st.markdown(f"""
         The results are clear:
-        1.  **Tuning Alone Failed:** The `NN (Tuned, No SMOTE)` model performed identically to the baseline. This proves the issue was not the model's parameters, but the imbalanced data.
-        2.  **SMOTE Succeeded:** The `NN (Tuned + SMOTE)` model **fundamentally fixed the model's behavior.**
+        1.  **Tuning Alone Failed:** The `NN (Tuned, No SMOTE)` model performed similarly to the baseline. This confirms the issue is data imbalance, not initial parameters.
+        2.  **SMOTE Succeeded:** The `NN (Tuned + SMOTE)` model, trained with the best parameters found, **fundamentally fixed the model's behavior.**
             * **False Negatives** (missed injuries) plummeted from **{baseline_fn:,}** to **{smote_fn:,}**.
             * **True Positives** (found injuries) skyrocketed from **{baseline_tp:,}** to **{smote_tp:,}**.
             
@@ -761,9 +784,9 @@ elif page == "Conclusion & Recommendations":
         ### The Solution: SMOTE's Impact
         Our goal was to fix this imbalance. The comparison table clearly shows the effect of our strategies:
         
-        * **1. `NN (Tuned, No SMOTE)`:** Hyperparameter tuning alone provided **no meaningful improvement**. The metrics are identical to the baseline, proving the model's weakness was not its parameters, but the imbalanced data.
+        * **1. `NN (Tuned, No SMOTE)`:** Hyperparameter tuning alone provided **no meaningful improvement**. The metrics are similar to the baseline, proving the model's weakness was not its parameters, but the imbalanced data.
         
-        * **2. `NN (Tuned + SMOTE)`:** Applying SMOTE to the training data **fundamentally fixed the model's behavior.**
+        * **2. `NN (Tuned + SMOTE)`:** Applying SMOTE to the full training data with the optimized hyperparameters **fundamentally fixed the model's behavior.**
             * **False Negatives** (missed injuries) plummeted from **{baseline_fn:,}** to **{smote_fn:,}**.
             * **True Positives** (found injuries) skyrocketed from **{baseline_tp:,}** to **{smote_tp:,}**.
         
