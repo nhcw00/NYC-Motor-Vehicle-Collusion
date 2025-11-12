@@ -71,9 +71,18 @@ def load_data():
 
 @st.cache_data
 def clean_and_engineer(df_raw):
-    """Cleans data, engineers features, and creates X and Y."""
+    """Cleans data, engineers features, and creates X and Y.
+    
+    Includes a fix for the 'unhashable type: dict' cache error 
+    by forcing object columns to string type.
+    """
     st.write("Cache miss: Cleaning data and engineering features...")
     df = df_raw.copy()
+    
+    # --- FIX: Convert ALL object columns to string to handle unhashable types for caching ---
+    for col in df.select_dtypes(include=['object']).columns:
+        df[col] = df[col].astype(str)
+    # ----------------------------------------------------------------------------------------
     
     # --- 1. Clean ALL Numeric Columns ---
     numeric_cols = [
@@ -177,7 +186,7 @@ def train_baseline_models(_X_train, _y_train, _preprocessor):
     for name, model in models.items():
         st.write(f"Training {name}...")
         pipeline = Pipeline(steps=[('preprocessor', _preprocessor),
-                                   ('classifier', model)])
+                                    ('classifier', model)])
         pipeline.fit(_X_train, _y_train)
         trained_models[name] = pipeline
         
@@ -402,10 +411,11 @@ elif page == "Descriptive Analysis":
         ax2.tick_params(axis='x', rotation=45)
         st.pyplot(fig2)
 
-    # --- Time-Series and Heatmap (No longer hidden) ---
+    # --- Time-Series and Heatmap ---
     st.write("---")
     fig3, ax3 = plt.subplots(figsize=(12, 6))
-    df.set_index('crash_date').resample('M').size().plot(ax=ax3)
+    # Using 'ME' (Month End) instead of 'M' to silence FutureWarning, though 'M' often works
+    df.set_index('crash_date').resample('ME').size().plot(ax=ax3) 
     ax3.set_title('Collisions Over Time (Monthly Trend)')
     st.pyplot(fig3)
     
@@ -426,7 +436,7 @@ elif page == "Descriptive Analysis":
     ax5.set_title('Total Collisions by Borough')
     st.pyplot(fig5)
     
-    # --- Hotspot Map (No longer hidden) ---
+    # --- Hotspot Map ---
     st.subheader("Collision Hotspot Map")
     st.markdown("This map shows the highest concentrations of the 50,000 most recent crashes.")
     with st.spinner("Generating interactive hotspot map..."):
@@ -436,7 +446,7 @@ elif page == "Descriptive Analysis":
 
     
     st.subheader("What is the human impact?")
-    # --- Victim Plots (No longer hidden) ---
+    # --- Victim Plots ---
     col1, col2 = st.columns(2)
     with col1:
         fig6, ax6 = plt.subplots()
@@ -467,7 +477,8 @@ elif page == "Descriptive Analysis":
     
     st.write("---")
     fig8, ax8 = plt.subplots(figsize=(12, 7))
-    victim_trends = df.set_index('crash_date').resample('M')[['number_of_pedestrians_injured', 'number_of_cyclist_injured', 'number_of_motorist_injured']].sum().rename(columns={
+    # Using 'ME' (Month End) instead of 'M' to silence FutureWarning
+    victim_trends = df.set_index('crash_date').resample('ME')[['number_of_pedestrians_injured', 'number_of_cyclist_injured', 'number_of_motorist_injured']].sum().rename(columns={
         'number_of_pedestrians_injured': 'Pedestrians Injured',
         'number_of_cyclist_injured': 'Cyclists Injured',
         'number_of_motorist_injured': 'Motorists Injured'
@@ -481,7 +492,7 @@ elif page == "Diagnostic Analysis":
     st.header("Diagnostic Analysis: Why Do Injuries Happen?")
     st.markdown("This section explores the *causes* and *relationships* behind collisions.")
     
-    # --- OLS Regression (No longer hidden) ---
+    # --- OLS Regression ---
     st.subheader("Statistical Factor Analysis (OLS Regression)")
     with st.spinner("Running OLS Regression..."):
         Y_ols = df['total_injured']
@@ -497,7 +508,7 @@ elif page == "Diagnostic Analysis":
     """)
     st.write("---")
 
-    # --- Top Factors Plots (No longer hidden) ---
+    # --- Top Factors Plots ---
     st.subheader("What are the most common causes?")
     fig_factor, ax_factor = plt.subplots(figsize=(12, 8))
     factor_data = df[df['contributing_factor_vehicle_1'] != 'Unspecified']['contributing_factor_vehicle_1']
@@ -522,7 +533,7 @@ elif page == "Diagnostic Analysis":
     st.pyplot(fig_fatal)
     st.write("---")
 
-    # --- Vehicle Type Plots (No longer hidden) ---
+    # --- Vehicle Type Plots ---
     st.subheader("What vehicle types are most involved?")
     fig_vehicle, ax_vehicle = plt.subplots(figsize=(12, 8))
     vehicle_data = df[df['vehicle_type_code1'] != 'Unspecified']['vehicle_type_code1']
@@ -531,7 +542,7 @@ elif page == "Diagnostic Analysis":
     ax_vehicle.set_title('Top 15 Vehicle Types Involved in Collisions (Vehicle 1)')
     st.pyplot(fig_vehicle)
 
-    # --- Sankey Diagram (No longer hidden) ---
+    # --- Sankey Diagram ---
     st.subheader("What are the most common collision types?")
     with st.spinner("Building Sankey diagram..."):
         sankey_fig = create_sankey_fig(df)
